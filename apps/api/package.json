@@ -1,0 +1,26 @@
+{
+  "name": "@mcpdeck/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./src/trpc/router.ts",
+  "exports": {
+    ".": {
+      "types": "./src/trpc/router.ts",
+      "default": "./src/trpc/router.ts"
+    }
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "@mcpdeck/shared": "workspace:*",
+    "@trpc/server": "^11.19.0",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.10.0",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.4.0",
+    "zod": "^4.0.0"
+  }
+}

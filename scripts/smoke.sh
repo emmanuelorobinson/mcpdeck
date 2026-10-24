@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# End-to-end check of scan/install/uninstall against disposable harness configs.
+# Never touches the real home directory.
+set -euo pipefail
+
+TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/mcpdeck-smoke.XXXXXX")"
+PORT=4187
+API_PID=""
+
+cleanup() {
+  if [[ -n "$API_PID" ]]; then kill "$API_PID" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+
+mkdir -p "$TEST_HOME/.cursor" "$TEST_HOME/.config/zed" "$TEST_HOME/.codex" "$TEST_HOME/.config/opencode" "$TEST_HOME/.codeium/windsurf" "$TEST_HOME/.pi/agent"
+
+# VS Code Insiders uses a separate profile directory whose location differs by OS.
+INSIDERS_USER_DIR="$TEST_HOME/.config/Code - Insiders/User"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  INSIDERS_USER_DIR="$TEST_HOME/Library/Application Support/Code - Insiders/User"
+fi
+mkdir -p "$INSIDERS_USER_DIR"
+
+cat > "$TEST_HOME/.cursor/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "test-server": {
+      "command": "npx",
+      "args": ["-y", "test-pkg"],
+      "env": { "TEST_TOKEN": "super-secret" }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}
+EOF
+
+cat > "$TEST_HOME/.codeium/windsurf/mcp_config.json" <<'EOF'
+{
+  "mcpServers": {
+    "playwright-custom": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
+}
+EOF
+
+cat > "$TEST_HOME/.config/zed/settings.json" <<'EOF'
+{
+  // keep this comment — Zed configs are JSONC
+  "theme": "One Dark",
+  "context_servers": {
+    "existing-zed": {
+      "source": "custom",
+      "command": { "path": "echo", "args": ["hello"] }
+    }
+  }
+}
+EOF
+
+cat > "$TEST_HOME/.codex/config.toml" <<'EOF'
+model = "gpt-5"
+approval_policy = "on-request"
+EOF
+
+cat > "$TEST_HOME/.config/opencode/opencode.jsonc" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  // opencode also accepts comments
+  "theme": "opencode",
+  "mcp": {
+    "existing-open": {
+      "type": "local",
+      "command": ["echo", "hi"],
+      "enabled": true
+    }
+  }
+}
+EOF
+
+cat > "$TEST_HOME/.config/opencode/opencode.json" <<'EOF'
+{
+  "mcp": {
+    "json-fallback": {
+      "type": "local",
+      "command": ["echo", "json"]
+    }
+  }
+}
+EOF
+
+cat > "$TEST_HOME/.pi/agent/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "pi-existing": {
+      "command": "npx",
+      "args": ["-y", "pi-pkg"]
+    }
+  }
+}
+EOF
+
+cat > "$INSIDERS_USER_DIR/mcp.json" <<'EOF'
+{
+  "servers": {
+    "insiders-existing": {
+      "type": "stdio",
+      "command": "echo",
+      "args": ["insiders"]
+    }
+  }
+}
+EOF
+
+HOME="$TEST_HOME" MCPDECK_DATA_DIR="$TEST_HOME/.data" PORT=$PORT \
+  bun apps/api/src/index.ts > "$TEST_HOME/api.log" 2>&1 &
+API_PID=$!
+
+for _ in $(seq 1 40); do
+  curl -sf "http://127.0.0.1:$PORT/api/health" > /dev/null && break
+  sleep 0.25
+done
+
+HEALTH="$(curl -sf "http://127.0.0.1:$PORT/api/health")"
+echo "$HEALTH" | jq -e '.ok == true' > /dev/null
+
+ZED_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="zed") | .serverCount')"
+[[ "$ZED_COUNT" == "1" ]] || { echo "FAIL: Zed JSONC was not parsed ($ZED_COUNT)"; exit 1; }
+echo "✓ Zed JSONC parsed"
+
+PI_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="pi") | .serverCount')"
+[[ "$PI_COUNT" == "1" ]] || { echo "FAIL: Pi config was not parsed ($PI_COUNT)"; exit 1; }
+echo "✓ Pi config parsed"
+
+INSIDERS_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="vscode-insiders") | .serverCount')"
+[[ "$INSIDERS_COUNT" == "1" ]] || { echo "FAIL: VS Code Insiders config was not parsed ($INSIDERS_COUNT)"; exit 1; }
+echo "✓ VS Code Insiders config parsed"
+
+OPEN_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="opencode") | .serverCount')"
+[[ "$OPEN_COUNT" == "1" ]] || { echo "FAIL: OpenCode did not prefer opencode.jsonc ($OPEN_COUNT)"; exit 1; }
+echo "✓ OpenCode prefers .jsonc when both forms exist"
+
+SID="$(curl -sf "http://127.0.0.1:$PORT/api/servers" | jq -r '.[] | select(.slug=="test-server") | .id')"
+[[ -n "$SID" ]] || { echo "FAIL: test-server was not imported"; exit 1; }
+echo "✓ Cursor config imported"
+
+PW_COUNT="$(curl -sf "http://127.0.0.1:$PORT/api/servers" \
+  | jq '[.[] | select(.command=="npx" and ((.args // []) | index("@playwright/mcp@latest")))] | length')"
+PW_INSTALLS="$(curl -sf "http://127.0.0.1:$PORT/api/servers" \
+  | jq '[.[] | select(.command=="npx" and ((.args // []) | index("@playwright/mcp@latest")))][0].installs | length')"
+[[ "$PW_COUNT" == "1" ]] || { echo "FAIL: same package imported as $PW_COUNT servers"; exit 1; }
+[[ "$PW_INSTALLS" == "2" ]] || { echo "FAIL: expected 2 Playwright installs, got $PW_INSTALLS"; exit 1; }
+echo "✓ Same package under different names collapsed into one server"
+
+BEFORE_RESCAN="$(curl -sf "http://127.0.0.1:$PORT/api/servers" | jq 'length')"
+RESCAN="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/sync")"
+echo "$RESCAN" | jq -e '[.results[].imported] | add == 0' > /dev/null \
+  || { echo "FAIL: rescan imported duplicate servers"; exit 1; }
+echo "$RESCAN" | jq -e '[.results[].linked] | add == 0' > /dev/null \
+  || { echo "FAIL: rescan created duplicate installs"; exit 1; }
+AFTER_RESCAN="$(curl -sf "http://127.0.0.1:$PORT/api/servers" | jq 'length')"
+[[ "$BEFORE_RESCAN" == "$AFTER_RESCAN" ]] \
+  || { echo "FAIL: rescan changed the server count ($BEFORE_RESCAN -> $AFTER_RESCAN)"; exit 1; }
+echo "✓ Rescan is idempotent"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"zed\"}" | jq -e '.ok == true' > /dev/null
+
+grep -q "keep this comment" "$TEST_HOME/.config/zed/settings.json" || { echo "FAIL: Zed comment was lost"; exit 1; }
+grep -q "existing-zed" "$TEST_HOME/.config/zed/settings.json" || { echo "FAIL: existing Zed server was lost"; exit 1; }
+grep -q '"test-server"' "$TEST_HOME/.config/zed/settings.json" || { echo "FAIL: server missing from Zed"; exit 1; }
+echo "✓ Installed into Zed, comments and existing entries preserved"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"opencode\"}" | jq -e '.ok == true' > /dev/null
+
+grep -q "opencode also accepts comments" "$TEST_HOME/.config/opencode/opencode.jsonc" || { echo "FAIL: OpenCode comment was lost"; exit 1; }
+grep -q "existing-open" "$TEST_HOME/.config/opencode/opencode.jsonc" || { echo "FAIL: existing OpenCode server was lost"; exit 1; }
+grep -q '"test-server"' "$TEST_HOME/.config/opencode/opencode.jsonc" || { echo "FAIL: server missing from OpenCode"; exit 1; }
+grep -q '"test-server"' "$TEST_HOME/.config/opencode/opencode.json" && { echo "FAIL: wrote to opencode.json instead of .jsonc"; exit 1; }
+echo "✓ Installed into OpenCode, comments and existing entries preserved"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"codex\"}" | jq -e '.ok == true' > /dev/null
+grep -q "\[mcp_servers.test-server\]" "$TEST_HOME/.codex/config.toml" || { echo "FAIL: server missing from Codex TOML"; exit 1; }
+grep -q 'model = "gpt-5"' "$TEST_HOME/.codex/config.toml" || { echo "FAIL: Codex settings were lost"; exit 1; }
+echo "✓ Installed into Codex TOML"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"pi\"}" | jq -e '.ok == true' > /dev/null
+grep -q '"test-server"' "$TEST_HOME/.pi/agent/mcp.json" || { echo "FAIL: server missing from Pi"; exit 1; }
+grep -q '"pi-existing"' "$TEST_HOME/.pi/agent/mcp.json" || { echo "FAIL: existing Pi server was lost"; exit 1; }
+jq empty "$TEST_HOME/.pi/agent/mcp.json" > /dev/null || { echo "FAIL: Pi config is not valid JSON"; exit 1; }
+echo "✓ Installed into Pi, existing entries preserved"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"vscode-insiders\"}" | jq -e '.ok == true' > /dev/null
+grep -q '"insiders-existing"' "$INSIDERS_USER_DIR/mcp.json" || { echo "FAIL: existing VS Code Insiders server was lost"; exit 1; }
+jq -e '.servers["test-server"].type == "stdio" and .servers["test-server"].command == "npx"' "$INSIDERS_USER_DIR/mcp.json" > /dev/null \
+  || { echo "FAIL: server missing or malformed in VS Code Insiders"; exit 1; }
+echo "✓ Installed into VS Code Insiders, existing entries preserved"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/uninstall" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"zed\"}" | jq -e '.ok == true' > /dev/null
+
+grep -q '"test-server"' "$TEST_HOME/.config/zed/settings.json" && { echo "FAIL: server still in Zed"; exit 1; }
+grep -q "existing-zed" "$TEST_HOME/.config/zed/settings.json" || { echo "FAIL: existing Zed server disappeared"; exit 1; }
+grep -q "keep this comment" "$TEST_HOME/.config/zed/settings.json" || { echo "FAIL: comment disappeared"; exit 1; }
+echo "✓ Uninstall from Zed preserved everything else"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/uninstall" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"pi\"}" | jq -e '.ok == true' > /dev/null
+grep -q '"test-server"' "$TEST_HOME/.pi/agent/mcp.json" && { echo "FAIL: server still in Pi"; exit 1; }
+grep -q '"pi-existing"' "$TEST_HOME/.pi/agent/mcp.json" || { echo "FAIL: existing Pi server disappeared"; exit 1; }
+echo "✓ Uninstall from Pi preserved everything else"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/uninstall" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"vscode-insiders\"}" | jq -e '.ok == true' > /dev/null
+jq -e '.servers["test-server"] == null' "$INSIDERS_USER_DIR/mcp.json" > /dev/null \
+  || { echo "FAIL: server still in VS Code Insiders"; exit 1; }
+grep -q '"insiders-existing"' "$INSIDERS_USER_DIR/mcp.json" || { echo "FAIL: existing VS Code Insiders server disappeared"; exit 1; }
+echo "✓ Uninstall from VS Code Insiders preserved everything else"
+
+[[ "$(find "$TEST_HOME/.data/backups" -type f | wc -l | tr -d ' ')" -gt 0 ]] || { echo "FAIL: no backups written"; exit 1; }
+echo "✓ Timestamped backups written"
+
+echo ""
+echo "All harness sync checks passed. Test home: $TEST_HOME"

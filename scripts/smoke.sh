@@ -14,12 +14,14 @@ trap cleanup EXIT
 
 mkdir -p "$TEST_HOME/.cursor" "$TEST_HOME/.config/zed" "$TEST_HOME/.codex" "$TEST_HOME/.config/opencode" "$TEST_HOME/.codeium/windsurf" "$TEST_HOME/.pi/agent"
 
-# VS Code Insiders uses a separate profile directory whose location differs by OS.
+# App Support paths differ by OS.
 INSIDERS_USER_DIR="$TEST_HOME/.config/Code - Insiders/User"
+CLAUDE_DIR="$TEST_HOME/.config/Claude"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   INSIDERS_USER_DIR="$TEST_HOME/Library/Application Support/Code - Insiders/User"
+  CLAUDE_DIR="$TEST_HOME/Library/Application Support/Claude"
 fi
-mkdir -p "$INSIDERS_USER_DIR"
+mkdir -p "$INSIDERS_USER_DIR" "$CLAUDE_DIR"
 
 cat > "$TEST_HOME/.cursor/mcp.json" <<'EOF'
 {
@@ -32,6 +34,10 @@ cat > "$TEST_HOME/.cursor/mcp.json" <<'EOF'
     "playwright": {
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
+    },
+    "remote-test": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer remote-secret" }
     }
   }
 }
@@ -115,6 +121,22 @@ cat > "$INSIDERS_USER_DIR/mcp.json" <<'EOF'
 }
 EOF
 
+cat > "$CLAUDE_DIR/claude_desktop_config.json" <<'EOF'
+{
+  "mcpServers": {
+    "claude-existing": {
+      "command": "echo",
+      "args": ["claude"]
+    },
+    "legacy-remote": {
+      "type": "http",
+      "url": "https://legacy.example.com/mcp",
+      "headers": { "X-Legacy-Key": "legacy-secret" }
+    }
+  }
+}
+EOF
+
 HOME="$TEST_HOME" MCPDECK_DATA_DIR="$TEST_HOME/.data" PORT=$PORT \
   bun apps/api/src/index.ts > "$TEST_HOME/api.log" 2>&1 &
 API_PID=$!
@@ -139,6 +161,10 @@ INSIDERS_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="vscode-ins
 [[ "$INSIDERS_COUNT" == "1" ]] || { echo "FAIL: VS Code Insiders config was not parsed ($INSIDERS_COUNT)"; exit 1; }
 echo "✓ VS Code Insiders config parsed"
 
+CLAUDE_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="claude-desktop") | .serverCount')"
+[[ "$CLAUDE_COUNT" == "2" ]] || { echo "FAIL: Claude Desktop config was not parsed ($CLAUDE_COUNT)"; exit 1; }
+echo "✓ Claude Desktop config parsed"
+
 OPEN_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="opencode") | .serverCount')"
 [[ "$OPEN_COUNT" == "1" ]] || { echo "FAIL: OpenCode did not prefer opencode.jsonc ($OPEN_COUNT)"; exit 1; }
 echo "✓ OpenCode prefers .jsonc when both forms exist"
@@ -146,6 +172,10 @@ echo "✓ OpenCode prefers .jsonc when both forms exist"
 SID="$(curl -sf "http://127.0.0.1:$PORT/api/servers" | jq -r '.[] | select(.slug=="test-server") | .id')"
 [[ -n "$SID" ]] || { echo "FAIL: test-server was not imported"; exit 1; }
 echo "✓ Cursor config imported"
+
+REMOTE_SID="$(curl -sf "http://127.0.0.1:$PORT/api/servers" \
+  | jq -r '.[] | select(.url=="https://mcp.example.com/mcp") | .id')"
+[[ -n "$REMOTE_SID" ]] || { echo "FAIL: remote-test was not imported"; exit 1; }
 
 PW_COUNT="$(curl -sf "http://127.0.0.1:$PORT/api/servers" \
   | jq '[.[] | select(.command=="npx" and ((.args // []) | index("@playwright/mcp@latest")))] | length')"
@@ -208,6 +238,38 @@ jq -e '.servers["test-server"].type == "stdio" and .servers["test-server"].comma
   || { echo "FAIL: server missing or malformed in VS Code Insiders"; exit 1; }
 echo "✓ Installed into VS Code Insiders, existing entries preserved"
 
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$REMOTE_SID\",\"harnessId\":\"claude-desktop\"}" | jq -e '.ok == true' > /dev/null
+
+jq -e '
+  .mcpServers["claude-existing"].command == "echo" and
+  .mcpServers["remote-test"].command == "npx" and
+  (.mcpServers["remote-test"] | has("url") | not) and
+  (.mcpServers["remote-test"] | has("type") | not) and
+  ([.mcpServers["remote-test"].args[] | select(startswith("mcp-remote"))] | length == 1) and
+  ([.mcpServers["remote-test"].args[] | select(. == "https://mcp.example.com/mcp")] | length == 1) and
+  ([.mcpServers["remote-test"].args[] | select(contains("remote-secret"))] | length == 0) and
+  ([.mcpServers["remote-test"].args[] | select(contains("${MCPDECK_HEADER_AUTHORIZATION}"))] | length == 1) and
+  ([.mcpServers["remote-test"].env[] | select(. == "Bearer remote-secret")] | length == 1)
+' "$CLAUDE_DIR/claude_desktop_config.json" > /dev/null \
+  || { echo "FAIL: remote server was not bridged through mcp-remote in Claude Desktop"; exit 1; }
+
+jq -e '
+  .mcpServers["legacy-remote"].command == "npx" and
+  (.mcpServers["legacy-remote"] | has("url") | not) and
+  ([.mcpServers["legacy-remote"].env[] | select(. == "legacy-secret")] | length == 1)
+' "$CLAUDE_DIR/claude_desktop_config.json" > /dev/null \
+  || { echo "FAIL: existing Claude Desktop url entry was not migrated"; exit 1; }
+echo "✓ Claude Desktop remote entries bridged through mcp-remote"
+
+CD_RESCAN="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/sync" \
+  -H 'content-type: application/json' \
+  -d '{"harnessId":"claude-desktop"}')"
+echo "$CD_RESCAN" | jq -e '.imported == 0 and .linked == 0' > /dev/null \
+  || { echo "FAIL: Claude Desktop bridge was not recognized as the same server"; exit 1; }
+echo "✓ Claude Desktop bridge round-trips without duplicates"
+
 curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/uninstall" \
   -H 'content-type: application/json' \
   -d "{\"serverId\":\"$SID\",\"harnessId\":\"zed\"}" | jq -e '.ok == true' > /dev/null
@@ -231,6 +293,14 @@ jq -e '.servers["test-server"] == null' "$INSIDERS_USER_DIR/mcp.json" > /dev/nul
   || { echo "FAIL: server still in VS Code Insiders"; exit 1; }
 grep -q '"insiders-existing"' "$INSIDERS_USER_DIR/mcp.json" || { echo "FAIL: existing VS Code Insiders server disappeared"; exit 1; }
 echo "✓ Uninstall from VS Code Insiders preserved everything else"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/uninstall" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$REMOTE_SID\",\"harnessId\":\"claude-desktop\"}" | jq -e '.ok == true' > /dev/null
+jq -e '.mcpServers["remote-test"] == null and .mcpServers["legacy-remote"].command == "npx"' \
+  "$CLAUDE_DIR/claude_desktop_config.json" > /dev/null \
+  || { echo "FAIL: uninstall from Claude Desktop removed the wrong entries"; exit 1; }
+echo "✓ Uninstall from Claude Desktop preserved the other bridge"
 
 [[ "$(find "$TEST_HOME/.data/backups" -type f | wc -l | tr -d ' ')" -gt 0 ]] || { echo "FAIL: no backups written"; exit 1; }
 echo "✓ Timestamped backups written"

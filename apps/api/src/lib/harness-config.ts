@@ -346,9 +346,127 @@ const zedAdapter: HarnessAdapter = {
 
 const standard = (key: string) => jsonAdapter(key, "standard");
 
+const MCP_REMOTE_PACKAGE = /^mcp-remote(?:@[\w.*-]+)?$/;
+const BRIDGE_COMMANDS = new Set(["npx", "bunx", "pnpm", "yarn"]);
+
+function bridgeHeaders(
+  args: string[],
+  env?: Record<string, string>,
+): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--header" && args[index] !== "-H") continue;
+    const raw = args[index + 1];
+    if (!raw) continue;
+    const colon = raw.indexOf(":");
+    if (colon <= 0) continue;
+    const name = raw.slice(0, colon).trim();
+    const value = raw
+      .slice(colon + 1)
+      .trim()
+      .replace(
+        /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,
+        (_, key: string) => env?.[key] ?? "",
+      );
+    if (name && value) headers[name] = value;
+    index += 1;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}
+
+/** Recognize an mcp-remote stdio bridge and expose it as a remote entry. */
+function remoteFromBridge(entry: McpEntry): McpEntry | null {
+  if (entry.transport !== "stdio" || !entry.command) return null;
+  const command = basename(entry.command)
+    .toLowerCase()
+    .replace(/\.(cmd|exe)$/, "");
+  if (!BRIDGE_COMMANDS.has(command)) return null;
+
+  const args = entry.args ?? [];
+  const packageIndex = args.findIndex((arg) => MCP_REMOTE_PACKAGE.test(arg));
+  if (packageIndex < 0) return null;
+
+  const remoteArgs = args.slice(packageIndex + 1);
+  const url = remoteArgs.find((arg) => /^https?:\/\//i.test(arg));
+  if (!url) return null;
+
+  return {
+    transport: "http",
+    url,
+    headers: bridgeHeaders(remoteArgs, entry.env),
+    enabled: entry.enabled,
+  };
+}
+
+function bridgeEnvKey(name: string, index: number, used: Set<string>): string {
+  const slug = name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const base = `MCPDECK_HEADER_${slug || index + 1}`;
+  let key = base;
+  let suffix = 2;
+  while (used.has(key)) {
+    key = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  used.add(key);
+  return key;
+}
+
+/**
+ * Claude Desktop only launches stdio servers from claude_desktop_config.json.
+ * Remote entries are written as an `npx mcp-remote` bridge. Header values use
+ * env indirection so they never appear in the process arguments.
+ */
+function bridgeFromRemote(entry: McpEntry): McpEntry {
+  if (entry.transport !== "http" || !entry.url) return entry;
+
+  const args = ["-y", "mcp-remote@latest", entry.url];
+  if (/^http:\/\//i.test(entry.url)) args.push("--allow-http");
+
+  const env: Record<string, string> = {};
+  const used = new Set<string>();
+  for (const [name, value] of Object.entries(entry.headers ?? {}).sort(
+    ([a], [b]) => a.localeCompare(b),
+  )) {
+    const key = bridgeEnvKey(name, Object.keys(env).length, used);
+    env[key] = value;
+    args.push("--header", `${name}:\${${key}}`);
+  }
+
+  return {
+    transport: "stdio",
+    command: "npx",
+    args,
+    env: Object.keys(env).length ? env : undefined,
+    enabled: entry.enabled,
+  };
+}
+
+const claudeDesktopBase = jsonAdapter("mcpServers", "standard");
+const claudeDesktopAdapter: HarnessAdapter = {
+  parse: claudeDesktopBase.parse,
+  serialize: claudeDesktopBase.serialize,
+  read: (raw) => {
+    const entries = claudeDesktopBase.read(raw);
+    for (const [name, entry] of Object.entries(entries)) {
+      entries[name] = remoteFromBridge(entry) ?? entry;
+    }
+    return entries;
+  },
+  write: (raw, entries) => {
+    const mapped: EntryMap = {};
+    for (const [name, entry] of Object.entries(entries)) {
+      mapped[name] = bridgeFromRemote(entry);
+    }
+    return claudeDesktopBase.write(raw, mapped);
+  },
+};
+
 const ADAPTERS: Record<string, HarnessAdapter> = {
   "claude-code": standard("mcpServers"),
-  "claude-desktop": standard("mcpServers"),
+  "claude-desktop": claudeDesktopAdapter,
   cursor: standard("mcpServers"),
   windsurf: standard("mcpServers"),
   "gemini-cli": standard("mcpServers"),

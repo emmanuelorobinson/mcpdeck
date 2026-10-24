@@ -17,7 +17,7 @@ export const HARNESSES: HarnessMeta[] = [
     color: "#D97757",
     format: "mcpServers",
     docsUrl: "https://modelcontextprotocol.io/quickstart/user",
-    note: "Requires a restart after config changes",
+    note: "Stdio only; remote servers are bridged through mcp-remote",
   },
   {
     id: "cursor",

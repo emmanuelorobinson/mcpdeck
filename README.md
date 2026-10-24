@@ -101,7 +101,7 @@ become `$XDG_CONFIG_HOME` (usually `~/.config`), and OpenCode/Zed respect
 | Harness | Config | Format | Notes |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude.json` | `mcpServers` | User-scope entries |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `mcpServers` | Restart the app after changes |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `mcpServers` | Remote servers are bridged through `npx mcp-remote`; restart after changes |
 | Cursor | `~/.cursor/mcp.json` | `mcpServers` | |
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` | `servers` | Adds the required `type` field |
 | VS Code Insiders | `~/Library/Application Support/Code - Insiders/User/mcp.json` | `servers` | Separate Insiders profile; same format as VS Code |
@@ -119,6 +119,18 @@ exists. A missing config file is not an error: installing creates it.
 OpenCode accepts `opencode.json` and `opencode.jsonc`. mcpdeck scans and writes
 the first one that exists, preferring `opencode.jsonc`, and never edits both
 forms in the same directory.
+
+### Claude Desktop remote servers
+
+Claude Desktop only launches stdio servers from `claude_desktop_config.json`;
+it rejects `url`/`type` entries. When you install or push a remote server into
+Claude Desktop, mcpdeck writes an `npx mcp-remote@latest` stdio bridge instead.
+Header values are passed through environment variables referenced as
+`${MCPDECK_HEADER_*}` so credentials do not appear in the process arguments.
+
+The bridge requires Node.js 18+ and downloads `mcp-remote` on first launch.
+Scanning recognizes existing `mcp-remote` bridges and maps them back to the
+remote server in the library. Restart Claude Desktop after config changes.
 
 ## How a write works
 

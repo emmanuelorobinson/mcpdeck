@@ -102,16 +102,16 @@ become `$XDG_CONFIG_HOME` (usually `~/.config`), and OpenCode/Zed respect
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude.json` | `mcpServers` | User-scope entries |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `mcpServers` | Remote servers are bridged through `npx mcp-remote`; restart after changes |
-| Cursor | `~/.cursor/mcp.json` | `mcpServers` | |
+| Cursor | `~/.cursor/mcp.json` | `mcpServers` | Explicit stdio/http `type` fields |
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` | `servers` | Adds the required `type` field |
 | VS Code Insiders | `~/Library/Application Support/Code - Insiders/User/mcp.json` | `servers` | Separate Insiders profile; same format as VS Code |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | |
-| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` | |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | Remote servers use `serverUrl`; also checks `windsurf-next` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` | Remote HTTP servers use `httpUrl` |
 | OpenCode | `~/.config/opencode/opencode.jsonc` | `mcp` | Prefers `.jsonc` when both forms exist; local/remote entries and `enabled` flag |
 | Codex | `~/.codex/config.toml` | `[mcp_servers.*]` | TOML is reformatted on write (see below) |
-| Cline | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `mcpServers` | |
+| Cline | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `mcpServers` | Remote servers use `type: "streamableHttp"`; also checks Insiders and `~/.cline` |
 | Pi | `~/.pi/agent/mcp.json` | `mcpServers` | Global Pi config; project-local `.pi/mcp.json` is not managed |
-| Zed | `~/.config/zed/settings.json` | `context_servers` | JSONC; source `custom` |
+| Zed | `~/.config/zed/settings.json` | `context_servers` | JSONC; flat `command`/`args`/`env` or `url` entries |
 
 A harness is reported as detected when its install directory or config file
 exists. A missing config file is not an error: installing creates it.
@@ -135,8 +135,11 @@ remote server in the library. Restart Claude Desktop after config changes.
 ## How a write works
 
 1. Re-read the current config, preserving its original text.
-2. Merge only the affected entry. JSON and JSONC files go through
-   `jsonc-parser`'s edit API, so comments, key order and most formatting survive.
+2. Update only the transport fields of each managed entry. Unknown fields such
+   as `autoApprove`, `timeout`, `trust`, `enabled` and extension settings are
+   retained, and entries mcpdeck cannot parse are left untouched. JSON and JSONC
+   files go through `jsonc-parser`'s edit API, so comments, key order and most
+   formatting survive.
 3. Copy the previous file to `.data/backups/<harness>/<timestamp>--<name>`.
 4. Write to a temporary file with mode `0600`, then rename it over the target.
    The last 25 backups per harness are kept.
@@ -212,8 +215,9 @@ curl -s -X POST http://127.0.0.1:4000/api/hooks/install \
 | `bun run shot` | Screenshot each page with Chrome (macOS path) |
 
 The smoke test never touches your real harness configs. It creates disposable
-Cursor, Zed, OpenCode, Codex and Pi files, then verifies JSONC comments, Pi reads
-and writes, OpenCode's `.jsonc` preference, alias dedupe, idempotent rescans,
+Cursor, Zed, OpenCode, Codex, Pi, Gemini CLI, Cline, Windsurf, VS Code Insiders
+and Claude Desktop files, then verifies each harness's entry shape, JSONC
+comments, preserved harness-specific settings, alias dedupe, idempotent rescans,
 existing entries, TOML output, uninstall behavior and backups. It prints the
 temporary home so you can inspect the result; remove it when done.
 

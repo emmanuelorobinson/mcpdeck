@@ -26,6 +26,7 @@ export const HARNESSES: HarnessMeta[] = [
     color: "#E7E7E7",
     format: "mcpServers",
     docsUrl: "https://docs.cursor.com/context/model-context-protocol",
+    note: "Writes explicit stdio/http type fields",
   },
   {
     id: "vscode",
@@ -52,6 +53,7 @@ export const HARNESSES: HarnessMeta[] = [
     color: "#5BE9C4",
     format: "mcpServers",
     docsUrl: "https://docs.windsurf.com/windsurf/cascade/mcp",
+    note: "Remote servers use the serverUrl field",
   },
   {
     id: "gemini-cli",
@@ -60,6 +62,7 @@ export const HARNESSES: HarnessMeta[] = [
     color: "#8FA6FF",
     format: "mcpServers",
     docsUrl: "https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md",
+    note: "Remote HTTP servers use httpUrl",
   },
   {
     id: "opencode",
@@ -86,6 +89,7 @@ export const HARNESSES: HarnessMeta[] = [
     color: "#7C5CFF",
     format: "mcpServers",
     docsUrl: "https://docs.cline.bot/mcp/configuring-mcp-servers",
+    note: "Remote servers use type streamableHttp; supports the CLI config fallback",
   },
   {
     id: "pi",
@@ -103,7 +107,7 @@ export const HARNESSES: HarnessMeta[] = [
     color: "#FFB454",
     format: "zed",
     docsUrl: "https://zed.dev/docs/ai/mcp",
-    note: "Uses `context_servers` with a custom source",
+    note: "Uses `context_servers` with flat command/args/env or url entries",
   },
 ];
 

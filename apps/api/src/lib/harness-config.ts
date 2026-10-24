@@ -100,7 +100,9 @@ function parseStandardEntry(raw: unknown): McpEntry | null {
       ? raw.url
       : typeof raw.httpUrl === "string"
         ? raw.httpUrl
-        : undefined;
+        : typeof raw.serverUrl === "string"
+          ? raw.serverUrl
+          : undefined;
 
   if (url) {
     return { transport: "http", url, headers, enabled };
@@ -127,22 +129,113 @@ function parseStandardEntry(raw: unknown): McpEntry | null {
   };
 }
 
-function writeStandardEntry(entry: McpEntry): Record<string, unknown> {
+type StandardWriteOptions = {
+  /** Add `type: "stdio"` for local entries (Cursor requires it). */
+  stdioType?: boolean;
+  /** Transport value for remote entries. `null` omits the field. */
+  httpType?: string | null;
+  /** Remote URL field name used by the harness. */
+  httpUrlKey?: "url" | "httpUrl" | "serverUrl";
+};
+
+function writeStandardEntry(
+  entry: McpEntry,
+  options: StandardWriteOptions = {},
+): Record<string, unknown> {
   if (entry.transport === "http") {
-    return compact({
-      type: "http",
-      url: entry.url,
-      headers: entry.headers,
-    });
+    const written: Record<string, unknown> = {};
+    if (options.httpType !== null) written.type = options.httpType ?? "http";
+    written[options.httpUrlKey ?? "url"] = entry.url;
+    if (entry.headers) written.headers = entry.headers;
+    return written;
   }
   return compact({
+    ...(options.stdioType ? { type: "stdio" } : {}),
     command: entry.command,
     args: entry.args,
     env: entry.env,
   });
 }
 
-function jsonAdapter(key: string, mode: "standard" | "vscode"): HarnessAdapter {
+const OTHER_TRANSPORT_FIELDS = [
+  "url",
+  "httpUrl",
+  "serverUrl",
+  "headers",
+  "http_headers",
+  "env_http_headers",
+  "bearer_token_env_var",
+  "http_headers_helper",
+  "oauth",
+  "oauth_resource",
+  "auth",
+];
+
+/**
+ * Keep fields mcpdeck does not model (timeouts, approval rules, extension
+ * settings, etc.) while replacing the fields that define the transport.
+ */
+function mergeEntry(
+  existing: unknown,
+  written: Record<string, unknown>,
+  transport: McpEntry["transport"],
+  clear: string[],
+): Record<string, unknown> {
+  const base = isRecord(existing) ? { ...existing } : {};
+  for (const key of clear) delete base[key];
+
+  if (transport === "http") {
+    for (const key of [
+      "command",
+      "args",
+      "env",
+      "environment",
+      "cwd",
+      "envFile",
+      "env_vars",
+    ]) {
+      delete base[key];
+    }
+    delete base.type;
+  } else {
+    for (const key of OTHER_TRANSPORT_FIELDS) delete base[key];
+    if (base.type !== "stdio" && base.type !== "local") delete base.type;
+  }
+
+  return { ...base, ...written };
+}
+
+/**
+ * Update known entries in place and retain entries mcpdeck cannot parse,
+ * such as Zed extension-managed context servers.
+ */
+function updateContainer(
+  existing: unknown,
+  entries: EntryMap,
+  parseEntry: (value: unknown) => McpEntry | null,
+  writtenFor: (entry: McpEntry) => Record<string, unknown>,
+  clearFor: (entry: McpEntry) => string[],
+): Record<string, unknown> {
+  const container = isRecord(existing) ? { ...existing } : {};
+  for (const name of Object.keys(container)) {
+    if (!entries[name] && parseEntry(container[name])) delete container[name];
+  }
+  for (const [name, entry] of Object.entries(entries)) {
+    container[name] = mergeEntry(
+      container[name],
+      writtenFor(entry),
+      entry.transport,
+      clearFor(entry),
+    );
+  }
+  return container;
+}
+
+function jsonAdapter(
+  key: string,
+  mode: "standard" | "vscode",
+  options: StandardWriteOptions = {},
+): HarnessAdapter {
   return {
     parse: parseJsonConfig,
     serialize: (raw, original) => serializeJsonConfig(raw, original, key),
@@ -157,23 +250,58 @@ function jsonAdapter(key: string, mode: "standard" | "vscode"): HarnessAdapter {
       return entries;
     },
     write: (raw, entries) => {
-      const container: Record<string, unknown> = {};
-      for (const [name, entry] of Object.entries(entries)) {
-        if (mode === "vscode") {
-          container[name] = compact({
-            type: entry.transport === "http" ? "http" : "stdio",
-            command: entry.transport === "stdio" ? entry.command : undefined,
-            args: entry.transport === "stdio" ? entry.args : undefined,
-            env: entry.transport === "stdio" ? entry.env : undefined,
-            url: entry.transport === "http" ? entry.url : undefined,
-            headers: entry.transport === "http" ? entry.headers : undefined,
-          });
-        } else {
-          container[name] = writeStandardEntry(entry);
-        }
-      }
+      const container = updateContainer(
+        raw[key],
+        entries,
+        parseStandardEntry,
+        (entry) => {
+          if (mode === "vscode") {
+            return compact({
+              type: entry.transport === "http" ? "http" : "stdio",
+              command: entry.transport === "stdio" ? entry.command : undefined,
+              args: entry.transport === "stdio" ? entry.args : undefined,
+              env: entry.transport === "stdio" ? entry.env : undefined,
+              url: entry.transport === "http" ? entry.url : undefined,
+              headers: entry.transport === "http" ? entry.headers : undefined,
+            });
+          }
+          return writeStandardEntry(entry, options);
+        },
+        (entry) =>
+          mode === "vscode"
+            ? ["type", "command", "args", "env", "url", "headers"]
+            : entry.transport === "http"
+              ? ["type", "url", "httpUrl", "serverUrl", "headers"]
+              : ["command", "args", "env", "environment"],
+      );
       return { ...raw, [key]: container };
     },
+  };
+}
+
+function parseOpenCodeEntry(value: unknown): McpEntry | null {
+  if (!isRecord(value)) return null;
+  const enabled = value.enabled !== false;
+  if (typeof value.url === "string") {
+    return {
+      transport: "http",
+      url: value.url,
+      headers: stringRecord(value.headers),
+      enabled,
+    };
+  }
+  const command = Array.isArray(value.command)
+    ? stringArray(value.command)
+    : typeof value.command === "string"
+      ? [value.command]
+      : undefined;
+  if (!command?.length) return null;
+  return {
+    transport: "stdio",
+    command: command[0],
+    args: command.slice(1).length ? command.slice(1) : undefined,
+    env: stringRecord(value.environment) ?? stringRecord(value.env),
+    enabled,
   };
 }
 
@@ -184,37 +312,17 @@ const openCodeAdapter: HarnessAdapter = {
     if (!isRecord(raw.mcp)) return {};
     const entries: EntryMap = {};
     for (const [name, value] of Object.entries(raw.mcp)) {
-      if (!isRecord(value)) continue;
-      const enabled = value.enabled !== false;
-      if (typeof value.url === "string") {
-        entries[name] = {
-          transport: "http",
-          url: value.url,
-          headers: stringRecord(value.headers),
-          enabled,
-        };
-        continue;
-      }
-      const command = Array.isArray(value.command)
-        ? stringArray(value.command)
-        : typeof value.command === "string"
-          ? [value.command]
-          : undefined;
-      if (!command?.length) continue;
-      entries[name] = {
-        transport: "stdio",
-        command: command[0],
-        args: command.slice(1).length ? command.slice(1) : undefined,
-        env: stringRecord(value.environment) ?? stringRecord(value.env),
-        enabled,
-      };
+      const entry = parseOpenCodeEntry(value);
+      if (entry) entries[name] = entry;
     }
     return entries;
   },
   write: (raw, entries) => {
-    const container: Record<string, unknown> = {};
-    for (const [name, entry] of Object.entries(entries)) {
-      container[name] =
+    const container = updateContainer(
+      raw.mcp,
+      entries,
+      parseOpenCodeEntry,
+      (entry) =>
         entry.transport === "http"
           ? compact({
               type: "remote",
@@ -227,47 +335,58 @@ const openCodeAdapter: HarnessAdapter = {
               command: [entry.command, ...(entry.args ?? [])].filter(Boolean),
               environment: entry.env,
               enabled: entry.enabled !== false,
-            });
-    }
+            }),
+      (entry) =>
+        entry.transport === "http"
+          ? ["type", "url", "headers", "enabled"]
+          : ["type", "command", "environment", "env", "enabled"],
+    );
     return { ...raw, mcp: container };
   },
 };
+
+function parseCodexEntry(value: unknown): McpEntry | null {
+  if (!isRecord(value)) return null;
+  const enabled = value.enabled !== false;
+  if (typeof value.url === "string") {
+    return {
+      transport: "http",
+      url: value.url,
+      headers: stringRecord(value.http_headers),
+      enabled,
+    };
+  }
+  if (typeof value.command !== "string") return null;
+  return {
+    transport: "stdio",
+    command: value.command,
+    args: stringArray(value.args),
+    env: stringRecord(value.env),
+    enabled,
+  };
+}
 
 const codexAdapter: HarnessAdapter = {
   parse: (text) => {
     if (!text.trim()) return {};
     return parseToml(text) as RawConfig;
   },
-  serialize: (raw) => stringifyToml(raw),  read: (raw) => {
+  serialize: (raw) => stringifyToml(raw),
+  read: (raw) => {
     if (!isRecord(raw.mcp_servers)) return {};
     const entries: EntryMap = {};
     for (const [name, value] of Object.entries(raw.mcp_servers)) {
-      if (!isRecord(value)) continue;
-      const enabled = value.enabled !== false;
-      if (typeof value.url === "string") {
-        entries[name] = {
-          transport: "http",
-          url: value.url,
-          headers: stringRecord(value.http_headers),
-          enabled,
-        };
-        continue;
-      }
-      if (typeof value.command !== "string") continue;
-      entries[name] = {
-        transport: "stdio",
-        command: value.command,
-        args: stringArray(value.args),
-        env: stringRecord(value.env),
-        enabled,
-      };
+      const entry = parseCodexEntry(value);
+      if (entry) entries[name] = entry;
     }
     return entries;
   },
   write: (raw, entries) => {
-    const container: Record<string, unknown> = {};
-    for (const [name, entry] of Object.entries(entries)) {
-      container[name] =
+    const container = updateContainer(
+      raw.mcp_servers,
+      entries,
+      parseCodexEntry,
+      (entry) =>
         entry.transport === "http"
           ? compact({
               url: entry.url,
@@ -277,11 +396,48 @@ const codexAdapter: HarnessAdapter = {
               command: entry.command,
               args: entry.args,
               env: entry.env,
-            });
-    }
+            }),
+      (entry) =>
+        entry.transport === "http"
+          ? ["url", "http_headers"]
+          : ["command", "args", "env"],
+    );
     return { ...raw, mcp_servers: container };
   },
 };
+
+function parseZedEntry(value: unknown): McpEntry | null {
+  if (!isRecord(value)) return null;
+  const enabled = value.enabled !== false;
+  if (typeof value.url === "string") {
+    return {
+      transport: "http",
+      url: value.url,
+      headers: stringRecord(value.headers),
+      enabled,
+    };
+  }
+  if (isRecord(value.command)) {
+    if (typeof value.command.path !== "string") return null;
+    return {
+      transport: "stdio",
+      command: value.command.path,
+      args: stringArray(value.command.args),
+      env: stringRecord(value.command.env),
+      enabled,
+    };
+  }
+  if (typeof value.command === "string") {
+    return {
+      transport: "stdio",
+      command: value.command,
+      args: stringArray(value.args),
+      env: stringRecord(value.env),
+      enabled,
+    };
+  }
+  return null;
+}
 
 const zedAdapter: HarnessAdapter = {
   parse: parseJsonConfig,
@@ -291,55 +447,36 @@ const zedAdapter: HarnessAdapter = {
     if (!isRecord(raw.context_servers)) return {};
     const entries: EntryMap = {};
     for (const [name, value] of Object.entries(raw.context_servers)) {
-      if (!isRecord(value)) continue;
-      if (typeof value.url === "string") {
-        entries[name] = {
-          transport: "http",
-          url: value.url,
-          headers: stringRecord(value.headers),
-        };
-        continue;
-      }
-      if (isRecord(value.command)) {
-        if (typeof value.command.path !== "string") continue;
-        entries[name] = {
-          transport: "stdio",
-          command: value.command.path,
-          args: stringArray(value.command.args),
-          env: stringRecord(value.command.env),
-        };
-        continue;
-      }
-      if (typeof value.command === "string") {
-        entries[name] = {
-          transport: "stdio",
-          command: value.command,
-          args: stringArray(value.args),
-          env: stringRecord(value.env),
-        };
-      }
+      const entry = parseZedEntry(value);
+      if (entry) entries[name] = entry;
     }
     return entries;
   },
   write: (raw, entries) => {
-    const container: Record<string, unknown> = {};
-    for (const [name, entry] of Object.entries(entries)) {
-      container[name] =
+    const container = updateContainer(
+      raw.context_servers,
+      entries,
+      parseZedEntry,
+      (entry) => {
+        if (entry.transport === "http") {
+          const written: Record<string, unknown> = { url: entry.url };
+          if (entry.headers) written.headers = entry.headers;
+          if (entry.enabled === false) written.enabled = false;
+          return written;
+        }
+        const written: Record<string, unknown> = {
+          command: entry.command,
+          args: entry.args ?? [],
+        };
+        if (entry.env) written.env = entry.env;
+        if (entry.enabled === false) written.enabled = false;
+        return written;
+      },
+      (entry) =>
         entry.transport === "http"
-          ? compact({
-              source: "custom",
-              url: entry.url,
-              headers: entry.headers,
-            })
-          : compact({
-              source: "custom",
-              command: compact({
-                path: entry.command,
-                args: entry.args,
-                env: entry.env,
-              }),
-            });
-    }
+          ? ["url", "headers", "source", "type"]
+          : ["command", "args", "env", "url", "headers", "source", "type"],
+    );
     return { ...raw, context_servers: container };
   },
 };
@@ -467,10 +604,18 @@ const claudeDesktopAdapter: HarnessAdapter = {
 const ADAPTERS: Record<string, HarnessAdapter> = {
   "claude-code": standard("mcpServers"),
   "claude-desktop": claudeDesktopAdapter,
-  cursor: standard("mcpServers"),
-  windsurf: standard("mcpServers"),
-  "gemini-cli": standard("mcpServers"),
-  cline: standard("mcpServers"),
+  cursor: jsonAdapter("mcpServers", "standard", { stdioType: true }),
+  windsurf: jsonAdapter("mcpServers", "standard", {
+    httpType: null,
+    httpUrlKey: "serverUrl",
+  }),
+  "gemini-cli": jsonAdapter("mcpServers", "standard", {
+    httpType: null,
+    httpUrlKey: "httpUrl",
+  }),
+  cline: jsonAdapter("mcpServers", "standard", {
+    httpType: "streamableHttp",
+  }),
   pi: standard("mcpServers"),
   vscode: jsonAdapter("servers", "vscode"),
   "vscode-insiders": jsonAdapter("servers", "vscode"),

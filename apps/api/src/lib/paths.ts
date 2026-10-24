@@ -49,7 +49,10 @@ export function configCandidates(harnessId: string): string[] {
     case "vscode-insiders":
       return [join(appSupport("Code - Insiders", "User"), "mcp.json")];
     case "windsurf":
-      return [join(HOME, ".codeium", "windsurf", "mcp_config.json")];
+      return [
+        join(HOME, ".codeium", "windsurf", "mcp_config.json"),
+        join(HOME, ".codeium", "windsurf-next", "mcp_config.json"),
+      ];
     case "gemini-cli":
       return [join(HOME, ".gemini", "settings.json")];
     case "opencode":
@@ -76,6 +79,17 @@ export function configCandidates(harnessId: string): string[] {
           "settings",
           "cline_mcp_settings.json",
         ),
+        join(
+          appSupport(
+            "Code - Insiders",
+            "User",
+            "globalStorage",
+            "saoudrizwan.claude-dev",
+          ),
+          "settings",
+          "cline_mcp_settings.json",
+        ),
+        join(HOME, ".cline", "data", "settings", "cline_mcp_settings.json"),
       ];
     case "zed":
       return [
@@ -104,7 +118,10 @@ export function detectRoots(harnessId: string): string[] {
     case "vscode-insiders":
       return [appSupport("Code - Insiders")];
     case "windsurf":
-      return [join(HOME, ".codeium", "windsurf")];
+      return [
+        join(HOME, ".codeium", "windsurf"),
+        join(HOME, ".codeium", "windsurf-next"),
+      ];
     case "gemini-cli":
       return [join(HOME, ".gemini")];
     case "opencode":
@@ -123,6 +140,15 @@ export function detectRoots(harnessId: string): string[] {
         join(
           appSupport("Code", "User", "globalStorage", "saoudrizwan.claude-dev"),
         ),
+        join(
+          appSupport(
+            "Code - Insiders",
+            "User",
+            "globalStorage",
+            "saoudrizwan.claude-dev",
+          ),
+        ),
+        join(HOME, ".cline"),
       ];
     case "zed":
       return [

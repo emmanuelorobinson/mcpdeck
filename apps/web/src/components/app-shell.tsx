@@ -1,6 +1,5 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   Boxes,
@@ -161,17 +160,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <main className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-7 sm:px-6 lg:px-8 lg:pt-10">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={pathname}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -2 }}
-              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-            >
-              {children}
-            </motion.div>
-          </AnimatePresence>
+          {children}
         </main>
       </div>
     </div>

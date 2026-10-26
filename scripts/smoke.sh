@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TEST_HOME/.cursor" "$TEST_HOME/.config/zed" "$TEST_HOME/.codex" "$TEST_HOME/.config/opencode" "$TEST_HOME/.codeium/windsurf" "$TEST_HOME/.pi/agent" "$TEST_HOME/.gemini"
+mkdir -p "$TEST_HOME/.cursor" "$TEST_HOME/.config/zed" "$TEST_HOME/.codex" "$TEST_HOME/.config/opencode" "$TEST_HOME/.codeium/windsurf" "$TEST_HOME/.pi/agent" "$TEST_HOME/.gemini" "$TEST_HOME/.config/devin"
 
 # App Support paths differ by OS.
 INSIDERS_USER_DIR="$TEST_HOME/.config/Code - Insiders/User"
@@ -140,6 +140,25 @@ cat > "$TEST_HOME/.gemini/settings.json" <<'EOF'
 }
 EOF
 
+cat > "$TEST_HOME/.config/devin/mcp_config.json" <<'EOF'
+{
+  "mcpServers": {
+    "devin-existing": {
+      "command": "echo",
+      "args": ["devin"],
+      "disabled": true,
+      "disabledTools": ["write_file"]
+    },
+    "remote-test": {
+      "url": "https://mcp.example.com/mcp",
+      "transport": "sse",
+      "headers": { "Authorization": "Bearer remote-secret" },
+      "oauthResource": "https://resource.example.com"
+    }
+  }
+}
+EOF
+
 cat > "$CLINE_SETTINGS_DIR/cline_mcp_settings.json" <<'EOF'
 {
   "mcpServers": {
@@ -225,6 +244,10 @@ echo "✓ Cline config parsed"
 GEMINI_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="gemini-cli") | .serverCount')"
 [[ "$GEMINI_COUNT" == "2" ]] || { echo "FAIL: Gemini CLI httpUrl config was not parsed ($GEMINI_COUNT)"; exit 1; }
 echo "✓ Gemini CLI httpUrl config parsed"
+
+DEVIN_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="devin") | .serverCount')"
+[[ "$DEVIN_COUNT" == "2" ]] || { echo "FAIL: Devin config was not parsed ($DEVIN_COUNT)"; exit 1; }
+echo "✓ Devin CLI/Desktop config parsed"
 
 OPEN_COUNT="$(echo "$HEALTH" | jq -r '.harnesses[] | select(.id=="opencode") | .serverCount')"
 [[ "$OPEN_COUNT" == "1" ]] || { echo "FAIL: OpenCode did not prefer opencode.jsonc ($OPEN_COUNT)"; exit 1; }
@@ -363,6 +386,27 @@ echo "✓ Gemini CLI uses httpUrl and preserves trust settings"
 
 curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
   -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"devin\"}" | jq -e '.ok == true' > /dev/null
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$REMOTE_SID\",\"harnessId\":\"devin\"}" | jq -e '.ok == true' > /dev/null
+jq -e '
+  .mcpServers["test-server"].command == "npx" and
+  (.mcpServers["test-server"] | has("transport") | not) and
+  .mcpServers["remote-test"].url == "https://mcp.example.com/mcp" and
+  (.mcpServers["remote-test"] | has("url") and has("headers")) and
+  (.mcpServers["remote-test"] | has("type") | not) and
+  (.mcpServers["remote-test"] | has("transport") | not) and
+  .mcpServers["remote-test"].oauthResource == "https://resource.example.com" and
+  .mcpServers["devin-existing"].command == "echo" and
+  .mcpServers["devin-existing"].disabled == true and
+  .mcpServers["devin-existing"].disabledTools == ["write_file"]
+' "$TEST_HOME/.config/devin/mcp_config.json" > /dev/null \
+  || { echo "FAIL: Devin entries are missing or extra settings were lost"; exit 1; }
+echo "✓ Devin writes url/command entries and preserves disabled/disabledTools"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/install" \
+  -H 'content-type: application/json' \
   -d "{\"serverId\":\"$REMOTE_SID\",\"harnessId\":\"claude-desktop\"}" | jq -e '.ok == true' > /dev/null
 
 jq -e '
@@ -433,6 +477,17 @@ jq -e '.mcpServers["remote-test"] == null and .mcpServers["legacy-remote"].comma
   "$CLAUDE_DIR/claude_desktop_config.json" > /dev/null \
   || { echo "FAIL: uninstall from Claude Desktop removed the wrong entries"; exit 1; }
 echo "✓ Uninstall from Claude Desktop preserved the other bridge"
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/hooks/uninstall" \
+  -H 'content-type: application/json' \
+  -d "{\"serverId\":\"$SID\",\"harnessId\":\"devin\"}" | jq -e '.ok == true' > /dev/null
+jq -e '
+  .mcpServers["test-server"] == null and
+  .mcpServers["devin-existing"].disabled == true and
+  .mcpServers["remote-test"].url == "https://mcp.example.com/mcp"
+' "$TEST_HOME/.config/devin/mcp_config.json" > /dev/null \
+  || { echo "FAIL: uninstall from Devin removed the wrong entries"; exit 1; }
+echo "✓ Uninstall from Devin preserved existing entries"
 
 [[ "$(find "$TEST_HOME/.data/backups" -type f | wc -l | tr -d ' ')" -gt 0 ]] || { echo "FAIL: no backups written"; exit 1; }
 echo "✓ Timestamped backups written"

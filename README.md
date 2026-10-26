@@ -106,6 +106,7 @@ become `$XDG_CONFIG_HOME` (usually `~/.config`), and OpenCode/Zed respect
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` | `servers` | Adds the required `type` field |
 | VS Code Insiders | `~/Library/Application Support/Code - Insiders/User/mcp.json` | `servers` | Separate Insiders profile; same format as VS Code |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | Remote servers use `serverUrl`; also checks `windsurf-next` |
+| Devin (CLI + Desktop) | `~/.config/devin/mcp_config.json` | `mcpServers` | Shared user config; project `.devin` scopes are not managed |
 | Gemini CLI | `~/.gemini/settings.json` | `mcpServers` | Remote HTTP servers use `httpUrl` |
 | OpenCode | `~/.config/opencode/opencode.jsonc` | `mcp` | Prefers `.jsonc` when both forms exist; local/remote entries and `enabled` flag |
 | Codex | `~/.codex/config.toml` | `[mcp_servers.*]` | TOML is reformatted on write (see below) |
@@ -119,6 +120,14 @@ exists. A missing config file is not an error: installing creates it.
 OpenCode accepts `opencode.json` and `opencode.jsonc`. mcpdeck scans and writes
 the first one that exists, preferring `opencode.jsonc`, and never edits both
 forms in the same directory.
+
+Devin CLI and Devin Desktop share the same user-level
+`~/.config/devin/mcp_config.json` (or `$XDG_CONFIG_HOME/devin/mcp_config.json`),
+so mcpdeck exposes them as one target. Remote entries are written with `url`
+and `headers`, which both clients accept. Devin can also inherit MCP servers
+from other harnesses through its `read_config_from` setting; those inherited
+entries are not copied into the Devin config and are not counted as Devin
+installs.
 
 ### Claude Desktop remote servers
 

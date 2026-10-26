@@ -36,6 +36,17 @@ function appSupport(...parts: string[]) {
   return join(process.env.XDG_CONFIG_HOME ?? join(HOME, ".config"), ...parts);
 }
 
+/** Devin CLI and Desktop both read this XDG-style directory on every OS. */
+function devinConfigDir() {
+  if (OS === "win32") {
+    return join(
+      process.env.APPDATA ?? join(HOME, "AppData", "Roaming"),
+      "devin",
+    );
+  }
+  return join(process.env.XDG_CONFIG_HOME ?? join(HOME, ".config"), "devin");
+}
+
 export function configCandidates(harnessId: string): string[] {
   switch (harnessId) {
     case "claude-code":
@@ -55,6 +66,8 @@ export function configCandidates(harnessId: string): string[] {
       ];
     case "gemini-cli":
       return [join(HOME, ".gemini", "settings.json")];
+    case "devin":
+      return [join(devinConfigDir(), "mcp_config.json")];
     case "opencode":
       return [
         join(
@@ -124,6 +137,16 @@ export function detectRoots(harnessId: string): string[] {
       ];
     case "gemini-cli":
       return [join(HOME, ".gemini")];
+    case "devin":
+      return [
+        devinConfigDir(),
+        join(HOME, ".local", "share", "devin"),
+        appSupport("Devin"),
+        join(HOME, ".devin"),
+        ...(OS === "darwin"
+          ? ["/Applications/Devin.app", join(HOME, "Applications", "Devin.app")]
+          : []),
+      ];
     case "opencode":
       return [
         join(

@@ -56,6 +56,15 @@ export const HARNESSES: HarnessMeta[] = [
     note: "Remote servers use the serverUrl field",
   },
   {
+    id: "devin",
+    name: "Devin (CLI + Desktop)",
+    vendor: "Cognition",
+    color: "#8B7CF6",
+    format: "mcpServers",
+    docsUrl: "https://docs.devin.ai/cli/extensibility/mcp/configuration",
+    note: "CLI and Desktop share ~/.config/devin/mcp_config.json; user scope only",
+  },
+  {
     id: "gemini-cli",
     name: "Gemini CLI",
     vendor: "Google",

@@ -136,6 +136,10 @@ type StandardWriteOptions = {
   httpType?: string | null;
   /** Remote URL field name used by the harness. */
   httpUrlKey?: "url" | "httpUrl" | "serverUrl";
+  /** Extra transport fields to remove before writing either transport. */
+  extraClear?: string[];
+  /** Extra transport fields to remove before writing a local entry. */
+  stdioExtraClear?: string[];
 };
 
 function writeStandardEntry(
@@ -271,8 +275,22 @@ function jsonAdapter(
           mode === "vscode"
             ? ["type", "command", "args", "env", "url", "headers"]
             : entry.transport === "http"
-              ? ["type", "url", "httpUrl", "serverUrl", "headers"]
-              : ["command", "args", "env", "environment"],
+              ? [
+                  "type",
+                  "url",
+                  "httpUrl",
+                  "serverUrl",
+                  "headers",
+                  ...(options.extraClear ?? []),
+                ]
+              : [
+                  "command",
+                  "args",
+                  "env",
+                  "environment",
+                  ...(options.extraClear ?? []),
+                  ...(options.stdioExtraClear ?? []),
+                ],
       );
       return { ...raw, [key]: container };
     },
@@ -613,6 +631,16 @@ const ADAPTERS: Record<string, HarnessAdapter> = {
     httpType: null,
     httpUrlKey: "httpUrl",
   }),
+  devin: jsonAdapter("mcpServers", "standard", {
+    httpType: null,
+    extraClear: ["transport"],
+    stdioExtraClear: [
+      "oauth",
+      "oauthClientId",
+      "oauthClientSecret",
+      "oauthResource",
+    ],
+  }),
   cline: jsonAdapter("mcpServers", "standard", {
     httpType: "streamableHttp",
   }),
@@ -630,6 +658,7 @@ const FORMAT_BY_HARNESS: Record<string, HarnessFormat> = {
   cursor: "mcpServers",
   windsurf: "mcpServers",
   "gemini-cli": "mcpServers",
+  devin: "mcpServers",
   cline: "mcpServers",
   pi: "mcpServers",
   vscode: "vscode",

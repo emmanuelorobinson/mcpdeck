@@ -14,9 +14,9 @@ and nothing is sent anywhere. No account, no cloud, no telemetry.
 - **Library** — every server is stored once with its command, args, URL, env
   keys, headers and tags. Existing configs are imported on first run.
 - **Sync** — scans Claude Code, Claude Desktop, Cursor, VS Code,
-  VS Code Insiders, Windsurf, Gemini CLI, OpenCode, Codex, Cline, Pi and Zed on
-  startup. New config entries are imported, existing entries are linked, and
-  removed entries are reported. The same package under different names (for
+  VS Code Insiders, Windsurf, Gemini CLI, Devin, OpenCode, Codex, Cline, Pi and
+  Zed on startup. New config entries are imported, existing entries are linked,
+  and removed entries are reported. The same package under different names (for
   example `playwright` and `microsoft/playwright-mcp`) is collapsed into one
   library server.
 - **Drift detection** — compares the library against each config and classifies
@@ -29,7 +29,7 @@ and nothing is sent anywhere. No account, no cloud, no telemetry.
 - **Secrets** — env values and headers are encrypted with AES-256-GCM before
   they touch SQLite. The UI only ever shows key names, with an explicit reveal
   action.
-- **Discover** — a curated 23-server catalog for common local and hosted MCPs.
+- **Discover** — a curated 35-server catalog for common local and hosted MCPs.
 - **Activity** — an append-only event log of scans, installs, edits, deletes and
   errors.
 - **Export** — a JSON snapshot of the library without secret values.

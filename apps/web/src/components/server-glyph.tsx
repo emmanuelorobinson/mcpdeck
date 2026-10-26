@@ -4,6 +4,7 @@ import {
   Globe,
   PenTool,
   Server,
+  Smartphone,
   Sparkles,
   SquareCheckBig,
   Terminal,
@@ -25,6 +26,10 @@ const CATEGORY_STYLES: Record<
   },
   Web: {
     icon: Globe,
+    className: "border-cyan/20 bg-cyan/10 text-cyan",
+  },
+  Mobile: {
+    icon: Smartphone,
     className: "border-cyan/20 bg-cyan/10 text-cyan",
   },
   AI: {
